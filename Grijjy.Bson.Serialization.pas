@@ -982,6 +982,11 @@ type
   private type
     TStructSerializer = class abstract(TSerializer)
     private
+      FFields2Serialize: TArray<string>;
+      procedure InitializeFields(const AStructType: TRttiType);
+    protected
+      function FieldInFields2Serialize(aName: string): Boolean;
+    private
       FFields: TArray<TFieldInfo>;
       FInfoByName: TObjectDictionary<String, TInfo>;
       FErrorOnExtraElements: Boolean;
@@ -3023,10 +3028,63 @@ begin
   inherited;
 end;
 
+function TgoBsonSerializer.TStructSerializer.FieldInFields2Serialize(
+  aName: string): Boolean;
+var
+  s: string;
+begin
+  Result := true;
+  if Length(FFields2Serialize) = 0 then
+    Exit;
+  Result := False;
+  for s in FFields2Serialize do
+  begin
+    if SameText(s, aName) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
 procedure TgoBsonSerializer.TStructSerializer.Initialize(
   const AStructType: TRttiType);
 begin
   { No default implementation }
+end;
+
+procedure TgoBsonSerializer.TStructSerializer.InitializeFields(
+  const AStructType: TRttiType);
+type
+    TFields2SerializeStaticProc = procedure(var AFieldList: TArray<string>);
+    TFields2SerializeProc = procedure(aClass: TClass; var AFieldList: TArray<string>);
+var
+  Method: TRttiMethod;
+  procStatic:   TFields2SerializeStaticProc;
+  proc:   TFields2SerializeProc;
+
+begin
+  for Method in AStructType.GetMethods do
+  begin
+    if (SameText(Method.Name, 'Fields2Serialize'))
+      and (Method.MethodKind in [mkClassProcedure])
+      and (Method.CallingConvention = ccReg)
+      and (Length(Method.GetParameters) = 1)
+      and SameText(Method.GetParameters[0].ParamType.ToString, 'TArray<System.string>')
+      and (pfVar in Method.GetParameters[0].Flags) then
+    begin
+      if Method.IsStatic then
+      begin
+         procStatic := Method.CodeAddress;
+         procStatic(FFields2Serialize);
+      end
+      else
+      begin
+         proc := Method.CodeAddress;
+         proc(AStructType.AsInstance.MetaclassType, FFields2Serialize);
+      end;
+      Exit;
+    end;
+  end;
 end;
 
 procedure TgoBsonSerializer.TStructSerializer.MapFields(
@@ -3051,7 +3109,8 @@ begin
     SetLength(FieldInfos, Length(Fields));
     for Field in Fields do
     begin
-      if (Field.Visibility >= mvPublic) then
+      IncludeField := FieldInFields2Serialize(Field.Name) and (Field.Visibility >= mvPublic);
+      if IncludeField then
       begin
         Attrs := Field.GetAttributes;
         IncludeField := True;
@@ -3108,7 +3167,8 @@ begin
       raise EgoBsonSerializerError.CreateFmt('Unable to get type information for type "%s"',
         [FTypeInfo.NameFld.ToString]);
 
-    FInfoByName := TObjectDictionary<String, TInfo>.Create([doOwnsValues]);
+    FInfoByName := TObjectDictionary<string, TInfo>.Create([doOwnsValues]);
+    InitializeFields(Typ);
     MapFields(Typ);
     Initialize(Typ);
   finally
@@ -3401,30 +3461,33 @@ begin
     PropCount := 0;
     for Prop in Props do
     begin
-      if (Prop.Visibility >= mvPublic) and (Prop.IsReadable) then
+      IncludeProperty := FieldInFields2Serialize(Prop.Name) and (Prop.Visibility >= mvPublic) and (Prop.IsReadable);
+      if  IncludeProperty then
       begin
         { Only include read/write properties, unless the type is a class or a
           BsonElement attribute is specified. }
         IncludeProperty := (Prop.IsWritable) or (Prop.PropertyType.IsInstance);
-
-        Attrs := Prop.GetAttributes;
-        for Attr in Attrs do
-        begin
-          if (Attr is BsonElementAttribute) then
-            IncludeProperty := True
-          else if (Attr is BsonIgnoreAttribute) then
-            IncludeProperty := False;
-        end;
-
         if (IncludeProperty) then
         begin
-          Info := TPropertyInfo.Create(StructType, Prop);
+          Attrs := Prop.GetAttributes;
+          for Attr in Attrs do
+          begin
+            if (Attr is BsonElementAttribute) then
+              IncludeProperty := True
+            else if (Attr is BsonIgnoreAttribute) then
+              IncludeProperty := False;
+          end;
 
-          Assert(PropCount < Length(PropInfos));
-          PropInfos[PropCount] := Info;
-          Inc(PropCount);
+          if (IncludeProperty) then
+          begin
+            Info := TPropertyInfo.Create(StructType, Prop);
 
-          FInfoByName.Add(Info.Name, Info);
+            Assert(PropCount < Length(PropInfos));
+            PropInfos[PropCount] := Info;
+            Inc(PropCount);
+
+            FInfoByName.Add(Info.Name, Info);
+          end;
         end;
       end;
     end;
