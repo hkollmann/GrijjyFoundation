@@ -986,6 +986,7 @@ type
       procedure InitializeFields(const AStructType: TRttiType);
     protected
       function FieldInFields2Serialize(aName: string): Boolean;
+      function HasFieldsInFields2Serialize: Boolean;
     private
       FFields: TArray<TFieldInfo>;
       FInfoByName: TObjectDictionary<String, TInfo>;
@@ -3028,15 +3029,19 @@ begin
   inherited;
 end;
 
+function TgoBsonSerializer.TStructSerializer.HasFieldsInFields2Serialize: Boolean;
+begin
+   Result := Length(FFields2Serialize) > 0;
+end;
+
 function TgoBsonSerializer.TStructSerializer.FieldInFields2Serialize(
   aName: string): Boolean;
 var
   s: string;
 begin
-  Result := true;
+  Result := False;
   if Length(FFields2Serialize) = 0 then
     Exit;
-  Result := False;
   for s in FFields2Serialize do
   begin
     if SameText(s, aName) then
@@ -3046,6 +3051,7 @@ begin
     end;
   end;
 end;
+
 procedure TgoBsonSerializer.TStructSerializer.Initialize(
   const AStructType: TRttiType);
 begin
@@ -3109,7 +3115,10 @@ begin
     SetLength(FieldInfos, Length(Fields));
     for Field in Fields do
     begin
-      IncludeField := FieldInFields2Serialize(Field.Name) and (Field.Visibility >= mvPublic);
+      if HasFieldsInFields2Serialize then
+        IncludeField := FieldInFields2Serialize(Field.Name)
+      else
+        IncludeField  := (Field.Visibility >= mvPublic);
       if IncludeField then
       begin
         Attrs := Field.GetAttributes;
@@ -3461,33 +3470,34 @@ begin
     PropCount := 0;
     for Prop in Props do
     begin
-      IncludeProperty := FieldInFields2Serialize(Prop.Name) and (Prop.Visibility >= mvPublic) and (Prop.IsReadable);
+      if HasFieldsInFields2Serialize then
+        IncludeProperty := FieldInFields2Serialize(Prop.Name)
+      else
+        IncludeProperty := (Prop.Visibility >= mvPublic);
+      IncludeProperty := IncludeProperty and Prop.IsReadable;
       if  IncludeProperty then
       begin
         { Only include read/write properties, unless the type is a class or a
           BsonElement attribute is specified. }
         IncludeProperty := (Prop.IsWritable) or (Prop.PropertyType.IsInstance);
+        Attrs := Prop.GetAttributes;
+        for Attr in Attrs do
+        begin
+          if (Attr is BsonElementAttribute) then
+            IncludeProperty := True
+          else if (Attr is BsonIgnoreAttribute) then
+            IncludeProperty := False;
+        end;
+
         if (IncludeProperty) then
         begin
-          Attrs := Prop.GetAttributes;
-          for Attr in Attrs do
-          begin
-            if (Attr is BsonElementAttribute) then
-              IncludeProperty := True
-            else if (Attr is BsonIgnoreAttribute) then
-              IncludeProperty := False;
-          end;
+          Info := TPropertyInfo.Create(StructType, Prop);
 
-          if (IncludeProperty) then
-          begin
-            Info := TPropertyInfo.Create(StructType, Prop);
+          Assert(PropCount < Length(PropInfos));
+          PropInfos[PropCount] := Info;
+          Inc(PropCount);
 
-            Assert(PropCount < Length(PropInfos));
-            PropInfos[PropCount] := Info;
-            Inc(PropCount);
-
-            FInfoByName.Add(Info.Name, Info);
-          end;
+          FInfoByName.Add(Info.Name, Info);
         end;
       end;
     end;
