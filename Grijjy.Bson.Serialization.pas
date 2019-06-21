@@ -751,6 +751,10 @@ type
     private
       procedure GetSerializationProcs(const AType: PTypeInfo);
     private
+      class procedure SerializeNothing(const AVar: TVarInfo;
+        const AAddress: Pointer; const AWriter: IgoBsonBaseWriter); static;
+      class procedure DeserializeNothing(const AVar: TVarInfo;
+        const AAddress: Pointer; const AReader: IgoBsonBaseReader); static;
       class procedure SerializeBoolean(const AVar: TVarInfo;
         const AAddress: Pointer; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeBoolean(const AVar: TVarInfo;
@@ -888,6 +892,10 @@ type
     private
       procedure GetSerializationProcs(const AType: PTypeInfo);
     private
+      class procedure SerializeNothing(const AVar: TPropertyInfo;
+        const AInstance: TObject; const AWriter: IgoBsonBaseWriter); static;
+      class procedure DeserializeNothing(const AVar: TPropertyInfo;
+        const AInstance: TObject; const AReader: IgoBsonBaseReader); static;
       class procedure SerializeBoolean(const AProp: TPropertyInfo;
         const AInstance: TObject; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeBoolean(const AProp: TPropertyInfo;
@@ -3635,6 +3643,12 @@ begin
   PInt8(AAddress)^ := TgoBsonSerializer.DeserializeInt32(AVar, AReader);
 end;
 
+class procedure TgoBsonSerializer.TVarInfo.DeserializeNothing(
+  const AVar: TVarInfo; const AAddress: Pointer;
+  const AReader: IgoBsonBaseReader);
+begin
+
+end;
 class procedure TgoBsonSerializer.TVarInfo.DeserializeObject(
   const AVar: TVarInfo; const AAddress: Pointer;
   const AReader: IgoBsonBaseReader);
@@ -3732,6 +3746,11 @@ var
   TypeData: PTypeData;
 begin
   case AType.Kind of
+    tkMethod, tkProcedure, tkClassRef, tkInterface: 
+	  begin
+        FSerializeProc   := SerializeNothing;
+        FDeserializeProc := DeserializeNothing;
+      end;
     tkInteger:
       begin
         TypeData := GetTypeData(AType);
@@ -4164,6 +4183,12 @@ begin
   TgoBsonSerializer.SerializeInt32(AVar, PInt8(AAddress)^, AWriter);
 end;
 
+class procedure TgoBsonSerializer.TVarInfo.SerializeNothing(
+  const AVar: TVarInfo; const AAddress: Pointer;
+  const AWriter: IgoBsonBaseWriter);
+begin
+
+end;
 class procedure TgoBsonSerializer.TVarInfo.SerializeObject(const AVar: TVarInfo;
   const AAddress: Pointer; const AWriter: IgoBsonBaseWriter);
 begin
@@ -4423,6 +4448,13 @@ begin
   SetInt64Prop(AInstance, AProp.Info, TgoBsonSerializer.DeserializeInt64(AProp, AReader));
 end;
 
+class procedure TgoBsonSerializer.TPropertyInfo.DeserializeNothing(
+  const AVar: TPropertyInfo; const AInstance: TObject;
+  const AReader: IgoBsonBaseReader);
+begin
+
+end;
+
 class procedure TgoBsonSerializer.TPropertyInfo.DeserializeObject(
   const AProp: TPropertyInfo; const AInstance: TObject;
   const AReader: IgoBsonBaseReader);
@@ -4504,6 +4536,11 @@ var
   TypeData: PTypeData;
 begin
   case AType.Kind of
+    tkMethod, tkProcedure, tkClassRef, tkInterface: 
+	  begin
+        FSerializeProc   := SerializeNothing;
+        FDeserializeProc := DeserializeNothing;
+      end;
     tkInteger:
       begin
         TypeData := GetTypeData(AType);
@@ -4846,6 +4883,12 @@ begin
   TgoBsonSerializer.SerializeInt64(AProp, GetInt64Prop(AInstance, AProp.Info), AWriter);
 end;
 
+class procedure TgoBsonSerializer.TPropertyInfo.SerializeNothing(
+  const AVar: TPropertyInfo; const AInstance: TObject;
+  const AWriter: IgoBsonBaseWriter);
+begin
+
+end;
 class procedure TgoBsonSerializer.TPropertyInfo.SerializeObject(
   const AProp: TPropertyInfo; const AInstance: TObject;
   const AWriter: IgoBsonBaseWriter);
