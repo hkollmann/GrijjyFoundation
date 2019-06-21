@@ -847,6 +847,10 @@ type
         const AAddress: Pointer; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeSet32(const AVar: TVarInfo;
         const AAddress: Pointer; const AReader: IgoBsonBaseReader); static;
+      class procedure SerializeDynArray(const AVar: TVarInfo;
+        const AAddress: Pointer; const AWriter: IgoBsonBaseWriter); static;
+      class procedure DeserializeDynArray(const AVar: TVarInfo;
+        const AAddress: Pointer; const AReader: IgoBsonBaseReader); static;
       class procedure SerializeArray(const AVar: TVarInfo;
         const AAddress: Pointer; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeArray(const AVar: TVarInfo;
@@ -952,6 +956,10 @@ type
         const AInstance: TObject; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeSet(const AProp: TPropertyInfo;
         const AInstance: TObject; const AReader: IgoBsonBaseReader); static;
+      class procedure SerializeDynArray(const AProp: TPropertyInfo;
+        const AInstance: TObject; const AWriter: IgoBsonBaseWriter); static;
+      class procedure DeserializeDynArray(const AProp: TPropertyInfo;
+        const AInstance: TObject; const AReader: IgoBsonBaseReader); static;
       class procedure SerializeArray(const AProp: TPropertyInfo;
         const AInstance: TObject; const AWriter: IgoBsonBaseWriter); static;
       class procedure DeserializeArray(const AProp: TPropertyInfo;
@@ -1040,7 +1048,7 @@ type
       procedure Deserialize(var AInstance: TObject; const AReader: IgoBsonBaseReader);
     end;
   private type
-    TArraySerializer = class(TSerializer)
+    TDynArraySerializer = class(TSerializer)
     private
       FElementSize: Integer;
       FElementInfo: TVarInfo;
@@ -1051,6 +1059,20 @@ type
       procedure Serialize(const AArray: Pointer; const AWriter: IgoBsonBaseWriter;
         const AElementRepresentation: TgoBsonRepresentation);
       function Deserialize(const AReader: IgoBsonBaseReader): Pointer;
+    end;
+   private type
+    TArraySerializer = class(TSerializer)
+    private
+      FElementSize: Integer;
+      FElementCount: Integer;
+      FElementInfo: TVarInfo;
+    public
+      constructor Create(const ATypeInfo: PTypeInfo);
+      destructor Destroy; override;
+
+      procedure Serialize(const AArray: Pointer; const AWriter: IgoBsonBaseWriter;
+        const AElementRepresentation: TgoBsonRepresentation);
+      procedure Deserialize(const AArray: Pointer; const AReader: IgoBsonBaseReader);
     end;
   private class var
     FRegisteredSerializers: TObjectDictionary<PTypeInfo, TSerializer>;
@@ -1128,10 +1150,14 @@ type
       const AValue: UInt32; const AWriter: IgoBsonBaseWriter); static;
     class function DeserializeSet(const AInfo: TInfo;
       const AReader: IgoBsonBaseReader): UInt32; static;
+    class procedure SerializeDynArray(const AInfo: TInfo;
+      const AValue: Pointer; const AWriter: IgoBsonBaseWriter); static;
+    class function DeserializeDynArray(const AInfo: TInfo;
+      const AReader: IgoBsonBaseReader): Pointer; static;
     class procedure SerializeArray(const AInfo: TInfo;
       const AValue: Pointer; const AWriter: IgoBsonBaseWriter); static;
-    class function DeserializeArray(const AInfo: TInfo;
-      const AReader: IgoBsonBaseReader): Pointer; static;
+    class procedure DeserializeArray(const AInfo: TInfo;
+      const AValue: Pointer; const AReader: IgoBsonBaseReader); static;
     class procedure SerializeRecord(const AInfo: TInfo;
       const AValue: Pointer; const AWriter: IgoBsonBaseWriter); static;
     class procedure DeserializeRecord(const AInfo: TInfo;
@@ -1806,6 +1832,7 @@ var
   Instance: TObject;
   RecordSerializer: TRecordSerializer absolute Serializer;
   ClassSerializer: TClassSerializer absolute Serializer;
+  DynArraySerializer: TDynArraySerializer absolute Serializer;
   ArraySerializer: TArraySerializer absolute Serializer;
   CustomSerializer: TCustomSerializer absolute Serializer;
 begin
@@ -1841,20 +1868,34 @@ begin
 
     tkDynArray:
       begin
+        Assert(Serializer is TDynArraySerializer);
+        PPointer(@AValue)^ := DynArraySerializer.Deserialize(AReader);
+      end;
+
+    tkArray:
+      begin
         Assert(Serializer is TArraySerializer);
-        PPointer(@AValue)^ := ArraySerializer.Deserialize(AReader);
+        ArraySerializer.Deserialize(@AValue, AReader);
       end
   else
     raise EgoBsonSerializerError.Create('Only class, record and dynamic array types can be deserialized');
   end;
 end;
 
-class function TgoBsonSerializer.DeserializeArray(const AInfo: TInfo;
-  const AReader: IgoBsonBaseReader): Pointer;
+class procedure TgoBsonSerializer.DeserializeArray(const AInfo: TInfo; const AValue: Pointer;
+  const AReader: IgoBsonBaseReader);
 begin
   Assert(Assigned(AInfo.Serializer));
   Assert(AInfo.Serializer is TArraySerializer);
-  Result := TArraySerializer(AInfo.Serializer).Deserialize(AReader);
+  TArraySerializer(AInfo.Serializer).Deserialize(AValue, AReader);
+end;
+
+class function TgoBsonSerializer.DeserializeDynArray(const AInfo: TInfo;
+  const AReader: IgoBsonBaseReader): Pointer;
+begin
+  Assert(Assigned(AInfo.Serializer));
+  Assert(AInfo.Serializer is TDynArraySerializer);
+  Result := TDynArraySerializer(AInfo.Serializer).Deserialize(AReader);
 end;
 
 class function TgoBsonSerializer.DeserializeBoolean(
@@ -2235,7 +2276,8 @@ begin
   case ATypeInfo.Kind of
     tkClass   : Result := TClassSerializer.Create(ATypeInfo);
     tkRecord  : Result := TRecordSerializer.Create(ATypeInfo);
-    tkDynArray: Result := TArraySerializer.Create(ATypeInfo);
+    tkDynArray: Result := TDynArraySerializer.Create(ATypeInfo);
+    tkArray   : Result := TArraySerializer.Create(ATypeInfo);
   else
     raise EgoBsonSerializerError.Create('Only class and record types can be serialized');
   end;
@@ -2370,6 +2412,7 @@ var
   Serializer: TSerializer;
   RecordSerializer: TRecordSerializer absolute Serializer;
   ClassSerializer: TClassSerializer absolute Serializer;
+  DynArraySerializer: TDynArraySerializer absolute Serializer;
   ArraySerializer: TArraySerializer absolute Serializer;
   CustomSerializer: TCustomSerializer absolute Serializer;
 begin
@@ -2393,6 +2436,11 @@ begin
       end;
     tkDynArray:
       begin
+        Assert(Serializer is TDynArraySerializer);
+        DynArraySerializer.Serialize(PPointer(@AValue)^, AWriter, TgoBsonRepresentation.Default);
+      end;
+    tkArray:
+      begin
         Assert(Serializer is TArraySerializer);
         ArraySerializer.Serialize(PPointer(@AValue)^, AWriter, TgoBsonRepresentation.Default);
       end;
@@ -2413,6 +2461,20 @@ begin
   Assert(Assigned(AInfo.Serializer));
   Assert(AInfo.Serializer is TArraySerializer);
   TArraySerializer(AInfo.Serializer).Serialize(AValue, AWriter, AInfo.Representation);
+end;
+
+class procedure TgoBsonSerializer.SerializeDynArray(const AInfo: TInfo;
+  const AValue: Pointer; const AWriter: IgoBsonBaseWriter);
+begin
+  if (AInfo.IgnoreIfDefault) and (AValue = nil) then
+    Exit;
+
+  if (AInfo.Name <> '') then
+    AWriter.WriteName(AInfo.Name);
+
+  Assert(Assigned(AInfo.Serializer));
+  Assert(AInfo.Serializer is TDynArraySerializer);
+  TDynArraySerializer(AInfo.Serializer).Serialize(AValue, AWriter, AInfo.Representation);
 end;
 
 class procedure TgoBsonSerializer.SerializeBoolean(
@@ -3429,9 +3491,9 @@ begin
   Result := FDiscriminatorRequired or (ANominalType <> FTypeInfo);
 end;
 
-{ TgoBsonSerializer.TArraySerializer }
+{ TgoBsonSerializer.TDynArraySerializer }
 
-constructor TgoBsonSerializer.TArraySerializer.Create(const ATypeInfo: PTypeInfo);
+constructor TgoBsonSerializer.TDynArraySerializer.Create(const ATypeInfo: PTypeInfo);
 var
   TypeData: PTypeData;
   ElementTypePtr: PPTypeInfo;
@@ -3444,10 +3506,11 @@ begin
     raise EgoBsonSerializerError.CreateFmt('Unsupported element type for array type %s', [ATypeInfo.NameFld.ToString]);
   ElementTypeInfo := ElementTypePtr^;
   FElementInfo := TVarInfo.Create(ElementTypeInfo);
+  // Sizeof the array element
   FElementSize := TypeData.elSize;
 end;
 
-function TgoBsonSerializer.TArraySerializer.Deserialize(
+function TgoBsonSerializer.TDynArraySerializer.Deserialize(
   const AReader: IgoBsonBaseReader): Pointer;
 var
   Count, Capacity: NativeInt;
@@ -3488,6 +3551,97 @@ begin
   AReader.ReadEndArray;
 end;
 
+destructor TgoBsonSerializer.TDynArraySerializer.Destroy;
+begin
+  FElementInfo.Free;
+  inherited;
+end;
+
+procedure TgoBsonSerializer.TDynArraySerializer.Serialize(const AArray: Pointer;
+  const AWriter: IgoBsonBaseWriter;
+  const AElementRepresentation: TgoBsonRepresentation);
+var
+  I, Length, ElementSize: Integer;
+  ElementInfo: TVarInfo;
+  ElementSerializeProc: TSerializeVarProc;
+  Element: PByte;
+  OrigRepresentation: TgoBsonRepresentation;
+begin
+  AWriter.WriteStartArray;
+  if Assigned(AArray) then
+  begin
+    Element := AArray;
+    ElementSize := FElementSize;
+    ElementInfo := FElementInfo;
+    ElementSerializeProc := ElementInfo.SerializeProc;
+
+    OrigRepresentation := ElementInfo.FRepresentation;
+    if (AElementRepresentation <> TgoBsonRepresentation.Default) then
+      ElementInfo.FRepresentation := AElementRepresentation;
+
+    Length := DynArraySize(AArray);
+    for I := 0 to Length - 1 do
+    begin
+      ElementSerializeProc(ElementInfo, Element, AWriter);
+      Inc(Element, ElementSize);
+    end;
+
+    ElementInfo.FRepresentation := OrigRepresentation;
+  end;
+  AWriter.WriteEndArray;
+end;
+
+{ TgoBsonSerializer.TArraySerializer }
+
+constructor TgoBsonSerializer.TArraySerializer.Create(
+  const ATypeInfo: PTypeInfo);
+var
+  TypeData: PTypeData;
+  ElementTypePtr: PPTypeInfo;
+  ElementTypeInfo: PTypeInfo;
+begin
+  inherited Create(ATypeInfo);
+  TypeData := ATypeInfo.TypeData;
+  ElementTypePtr := TypeData.ArrayData.ElType;
+  if (ElementTypePtr = nil) or (ElementTypePtr^ = nil) then
+    raise EgoBsonSerializerError.CreateFmt('Unsupported element type for array type %s', [ATypeInfo.NameFld.ToString]);
+  ElementTypeInfo := ElementTypePtr^;
+  FElementInfo := TVarInfo.Create(ElementTypeInfo);
+  // Size of the array element
+  FElementSize := ElementTypeInfo.TypeData.elSize;
+  FElementCount := TypeData.elSize div FElementSize;
+
+end;
+
+procedure TgoBsonSerializer.TArraySerializer.Deserialize(
+  const AArray: Pointer; const AReader: IgoBsonBaseReader);
+var
+  Count, Capacity: NativeInt;
+  ElementSize: Integer;
+  ElementInfo: TVarInfo;
+  ElementDeserializeProc: TDeserializeVarProc;
+  Element: PByte;
+begin
+  AReader.ReadStartArray;
+  Count := 0;
+  Capacity := FElementCount;
+  Element := PByte(AArray);
+  ElementSize := FElementSize;
+  ElementInfo := FElementInfo;
+  ElementDeserializeProc := ElementInfo.DeserializeProc;
+  while (AReader.ReadBsonType <> TgoBsonType.EndOfDocument) do
+  begin
+    if (Count >= Capacity) then
+    begin
+      raise EgoBsonSerializerError.CreateFmt('count of elements exceeds array size: %d', [Capacity]);
+    end;
+    ElementDeserializeProc(ElementInfo, Element, AReader);
+    Inc(Count);
+    Inc(Element, ElementSize);
+  end;
+  AReader.ReadEndArray;
+end;
+
 destructor TgoBsonSerializer.TArraySerializer.Destroy;
 begin
   FElementInfo.Free;
@@ -3516,7 +3670,7 @@ begin
     if (AElementRepresentation <> TgoBsonRepresentation.Default) then
       ElementInfo.FRepresentation := AElementRepresentation;
 
-    Length := DynArraySize(AArray);
+    Length := FElementCount;
     for I := 0 to Length - 1 do
     begin
       ElementSerializeProc(ElementInfo, Element, AWriter);
@@ -3552,11 +3706,18 @@ begin
     raise EgoBsonSerializerError.CreateFmt('Unsupported type "%s"', [AType.NameFld.ToString]);
 end;
 
+class procedure TgoBsonSerializer.TVarInfo.DeserializeDynArray(
+  const AVar: TVarInfo; const AAddress: Pointer;
+  const AReader: IgoBsonBaseReader);
+begin
+  PPointer(AAddress)^ := TgoBsonSerializer.DeserializeDynArray(AVar, AReader);
+end;
+
 class procedure TgoBsonSerializer.TVarInfo.DeserializeArray(
   const AVar: TVarInfo; const AAddress: Pointer;
   const AReader: IgoBsonBaseReader);
 begin
-  PPointer(AAddress)^ := TgoBsonSerializer.DeserializeArray(AVar, AReader);
+  TgoBsonSerializer.DeserializeArray(AVar, AAddress, AReader);
 end;
 
 class procedure TgoBsonSerializer.TVarInfo.DeserializeBoolean(
@@ -4072,6 +4233,28 @@ begin
         end
         else
         begin
+          FSerializeProc := SerializeDynArray;
+          FDeserializeProc := DeserializeDynArray;
+          FSerializer := TgoBsonSerializer.GetOrAddSerializer(AType);
+        end;
+      end;
+
+    tkArray:
+      begin
+        if FIgnoreIfDefault and FHasDefaultValue then
+          raise EgoBsonSerializerError.Create('Custom default values are not supported for array types');
+
+        if (AType = TypeInfo(TBytes)) then
+        begin
+          FSerializeProc := SerializeTBytes;
+          FDeserializeProc := DeserializeTBytes;
+          if (FRepresentation = TgoBsonRepresentation.Default) then
+            FRepresentation := TgoBsonRepresentation.Binary
+          else
+            CheckTBytesRepresentation(FRepresentation);
+        end
+        else
+        begin
           FSerializeProc := SerializeArray;
           FDeserializeProc := DeserializeArray;
           FSerializer := TgoBsonSerializer.GetOrAddSerializer(AType);
@@ -4092,11 +4275,17 @@ begin
   end;
 end;
 
-class procedure TgoBsonSerializer.TVarInfo.SerializeArray(
+class procedure TgoBsonSerializer.TVarInfo.SerializeDynArray(
   const AVar: TVarInfo; const AAddress: Pointer;
   const AWriter: IgoBsonBaseWriter);
 begin
-  TgoBsonSerializer.SerializeArray(AVar, PPointer(AAddress)^, AWriter);
+  TgoBsonSerializer.SerializeDynArray(AVar, PPointer(AAddress)^, AWriter);
+end;
+
+class procedure TgoBsonSerializer.TVarInfo.SerializeArray(const AVar: TVarInfo;
+  const AAddress: Pointer; const AWriter: IgoBsonBaseWriter);
+begin
+  TgoBsonSerializer.SerializeArray(AVar, AAddress, AWriter);
 end;
 
 class procedure TgoBsonSerializer.TVarInfo.SerializeBoolean(
@@ -4319,8 +4508,8 @@ begin
   GetSerializationProcs(FType);
 
   if (not Assigned(FSerializeProc)) or (not Assigned(FDeserializeProc)) then
-    raise EgoBsonSerializerError.CreateFmt('Unsupported field type "%s" for field %s.%s',
-      [FieldType.Name, AStructType.Name, AField.Name]);
+    raise EgoBsonSerializerError.CreateFmt('Unsupported field type "%s" for field %s.%s of type "%s"',
+      [FieldType.Name, AStructType.Name, AField.Name, GetEnumName(TypeInfo(System.TTypeKind), Integer(FType.Kind))]);
 
   FName := FieldName;
   FOffset := AField.Offset;
@@ -4379,7 +4568,7 @@ begin
   FInfo := (AProp as TRttiInstanceProperty).PropInfo;
 end;
 
-class procedure TgoBsonSerializer.TPropertyInfo.DeserializeArray(
+class procedure TgoBsonSerializer.TPropertyInfo.DeserializeDynArray(
   const AProp: TPropertyInfo; const AInstance: TObject;
   const AReader: IgoBsonBaseReader);
 var
@@ -4388,7 +4577,18 @@ begin
   { Note: cannot use SetDynArrayProp here because of reference count issue in
     Delphi. }
   TValue.Make(nil, AProp.Info.PropType^, Value);
-  PPointer(Value.GetReferenceToRawData)^ := TgoBsonSerializer.DeserializeArray(AProp, AReader);
+  PPointer(Value.GetReferenceToRawData)^ := TgoBsonSerializer.DeserializeDynArray(AProp, AReader);
+  SetValueProp(AInstance, AProp.Info, Value);
+end;
+
+class procedure TgoBsonSerializer.TPropertyInfo.DeserializeArray(
+  const AProp: TPropertyInfo; const AInstance: TObject;
+  const AReader: IgoBsonBaseReader);
+var
+  Value: TValue;
+begin
+  TValue.Make(nil, AProp.Info.PropType^, Value);
+  TgoBsonSerializer.DeserializeArray(AProp, Value.GetReferenceToRawData, AReader);
   SetValueProp(AInstance, AProp.Info, Value);
 end;
 
@@ -4795,6 +4995,28 @@ begin
         end
         else
         begin
+          FSerializeProc := SerializeDynArray;
+          FDeserializeProc := DeserializeDynArray;
+          FSerializer := TgoBsonSerializer.GetOrAddSerializer(AType);
+        end;
+      end;
+
+    tkArray:
+      begin
+        if FIgnoreIfDefault and FHasDefaultValue then
+          raise EgoBsonSerializerError.Create('Custom default values are not supported for array types');
+
+        if (AType = TypeInfo(TBytes)) then
+        begin
+          FSerializeProc := SerializeTBytes;
+          FDeserializeProc := DeserializeTBytes;
+          if (FRepresentation = TgoBsonRepresentation.Default) then
+            FRepresentation := TgoBsonRepresentation.Binary
+          else
+            CheckTBytesRepresentation(FRepresentation);
+        end
+        else
+        begin
           FSerializeProc := SerializeArray;
           FDeserializeProc := DeserializeArray;
           FSerializer := TgoBsonSerializer.GetOrAddSerializer(AType);
@@ -4813,6 +5035,18 @@ begin
   else
     Assert(False);
   end;
+end;
+
+class procedure TgoBsonSerializer.TPropertyInfo.SerializeDynArray(
+  const AProp: TPropertyInfo; const AInstance: TObject;
+  const AWriter: IgoBsonBaseWriter);
+var
+  Value: TValue;
+begin
+  { Note: cannot use GetDynArrayProp here because of reference count issue in
+    Delphi in case the Getter returns an array that is created on-the-fly. }
+  Value := GetValueProp(AInstance, AProp.Info);
+  TgoBsonSerializer.SerializeDynArray(AProp, PPointer(Value.GetReferenceToRawData)^, AWriter);
 end;
 
 class procedure TgoBsonSerializer.TPropertyInfo.SerializeArray(
