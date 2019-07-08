@@ -594,6 +594,15 @@ type
     DateTime, Document, Binary, ObjectId, Symbol);
 
 type
+  { Apply this attribute to elements you want to serialize.
+    If one [S] is set only [S] marked properties are serialized
+    You serialize esch property no matter of visibility
+  }
+  SAttribute = class(TCustomAttribute)
+  end;
+
+
+type
   { Used internally by BsonDefaultValueAttribute to specify a default value }
   TgoBsonDefaultValue = record
   {$REGION 'Internal Declarations'}
@@ -3060,19 +3069,53 @@ end;
 
 procedure TgoBsonSerializer.TStructSerializer.InitializeFields(
   const AStructType: TRttiType);
+
+procedure FindAttrS;
+var
+  Fields: TArray<TRttiField>;
+  Field: TRttiField;
+  Attrs: TArray<TCustomAttribute>;
+  Attr: TCustomAttribute;
+  l: TList<string>;
+  i: Integer;
+begin
+    l := TList<string>.Create;
+    try
+      Fields := AStructType.GetDeclaredFields;
+      for Field in Fields do
+      begin
+          Attrs := Field.GetAttributes;
+          for Attr in Attrs do
+          begin
+            if (Attr is SAttribute) then
+            begin
+              l.Add(Field.Name);
+              Break;
+            end;
+          end;
+      end;
+      SetLength(FFields2Serialize, l.Count);
+      for i := 0 to l.Count - 1 do
+        FFields2Serialize[i] := l[i];
+    finally
+      l.Free;
+    end;
+end;
+
+procedure FindGetFields;
 type
     TFields2SerializeStaticProc = procedure(var AFieldList: TArray<string>);
-    TFields2SerializeProc = procedure(aClass: TClass; var AFieldList: TArray<string>);
+    TFields2SerializeClassProc = procedure(aClass: TClass; var AFieldList: TArray<string>);
+    TFields2SerializeProc = procedure(aClass: TObject; var AFieldList: TArray<string>);
 var
   Method: TRttiMethod;
   procStatic:   TFields2SerializeStaticProc;
+  procClass:   TFields2SerializeClassProc;
   proc:   TFields2SerializeProc;
-
 begin
   for Method in AStructType.GetMethods do
   begin
-    if (SameText(Method.Name, 'Fields2Serialize'))
-      and (Method.MethodKind in [mkClassProcedure])
+    if (SameText(Method.Name, 'GetFields2Serialize'))
       and (Method.CallingConvention = ccReg)
       and (Length(Method.GetParameters) = 1)
       and SameText(Method.GetParameters[0].ParamType.ToString, 'TArray<System.string>')
@@ -3083,14 +3126,24 @@ begin
          procStatic := Method.CodeAddress;
          procStatic(FFields2Serialize);
       end
+      else if Method.MethodKind = mkClassProcedure then
+      begin
+         procClass := Method.CodeAddress;
+         procClass(AStructType.AsInstance.MetaclassType, FFields2Serialize);
+      end
       else
       begin
          proc := Method.CodeAddress;
-         proc(AStructType.AsInstance.MetaclassType, FFields2Serialize);
+         proc(AStructType.AsInstance, FFields2Serialize);
       end;
-      Exit;
+      break;
     end;
   end;
+end;
+
+begin
+  FindAttrS;
+  FindGetFields;
 end;
 
 procedure TgoBsonSerializer.TStructSerializer.MapFields(
