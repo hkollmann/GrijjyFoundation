@@ -594,15 +594,6 @@ type
     DateTime, Document, Binary, ObjectId, Symbol);
 
 type
-  { Apply this attribute to elements you want to serialize.
-    If one [S] is set only [S] marked properties are serialized
-    You serialize esch property no matter of visibility
-  }
-  SAttribute = class(TCustomAttribute)
-  end;
-
-
-type
   { Used internally by BsonDefaultValueAttribute to specify a default value }
   TgoBsonDefaultValue = record
   {$REGION 'Internal Declarations'}
@@ -703,6 +694,14 @@ type
   { Apply this attribute to a record or class if you want to raise an exception
     when deserializing elements that are not part of the record or class. }
   BsonErrorOnExtraElementsAttribute = class(TCustomAttribute)
+  end;
+
+type
+  { Apply this attribute to elements you want to serialize.
+    If one [S] is set only [S] marked properties are serialized
+    You serialize esch property no matter of visibility
+  }
+  SAttribute = class(BsonElementAttribute)
   end;
 
 type
@@ -991,8 +990,10 @@ type
   private type
     TStructSerializer = class abstract(TSerializer)
     private
+      FCustomSerializer: TSerializer;
       FFields2Serialize: TArray<string>;
       procedure InitializeFields(const AStructType: TRttiType);
+      procedure InitializeCustomSerializer(const AStructType: TRttiType);
     protected
       function FieldInFields2Serialize(aName: string): Boolean;
       function HasFieldsInFields2Serialize: Boolean;
@@ -1033,7 +1034,8 @@ type
 
     TClassSerializer = class(TStructSerializer)
     private const
-      NAME_DISCRIMINATOR = '_t';
+      NAME_DISCRIMINATOR   = '_t';
+      CUSTOM_DISCRIMINATOR = '_custom';
     private
       {$IFDEF MSWINDOWS}
       FConstructorProc: TConstructorProc;
@@ -2121,7 +2123,7 @@ begin
       { Even though AValue may be assigned, we do not free it }
       AReader.ReadNull;
 
-    TgoBsonType.Document:
+    TgoBsonType.Document, TgoBsonType.Array:
       begin
         Assert(Assigned(AInfo.Serializer));
         Assert(AInfo.Serializer is TClassSerializer);
@@ -3040,7 +3042,7 @@ end;
 
 function TgoBsonSerializer.TStructSerializer.HasFieldsInFields2Serialize: Boolean;
 begin
-   Result := Length(FFields2Serialize) > 0;
+  Result := (Length(FFields2Serialize) > 0) or Assigned(FCustomSerializer);
 end;
 
 function TgoBsonSerializer.TStructSerializer.FieldInFields2Serialize(
@@ -3067,51 +3069,68 @@ begin
   { No default implementation }
 end;
 
+procedure TgoBsonSerializer.TStructSerializer.InitializeCustomSerializer(
+  const AStructType: TRttiType);
+var
+  StructType: TRttiType;
+  serializer: TSerializer;
+begin
+  StructType := AStructType;
+  while Assigned(StructType) do
+  begin
+    serializer := GetOrAddSerializer(StructType.Handle);
+    if Assigned(serializer) and serializer.IsCustomSerializer then
+    begin
+      FCustomSerializer := serializer;
+      Exit;
+    end;
+    StructType := StructType.BaseType;
+  end;
+end;
 procedure TgoBsonSerializer.TStructSerializer.InitializeFields(
   const AStructType: TRttiType);
 
-procedure FindAttrS;
 var
-  Fields: TArray<TRttiField>;
-  Field: TRttiField;
-  Attrs: TArray<TCustomAttribute>;
-  Attr: TCustomAttribute;
-  l: TList<string>;
-  i: Integer;
+  Fields2Serialize: TArray<string>;
+
+procedure FindAttrS(const AStructType: TRttiType);
+var
+  Fields:     TArray<TRttiField>;
+  Field:      TRttiField;
+  Attrs:      TArray<TCustomAttribute>;
+  Attr:       TCustomAttribute;
+  FieldCount: Integer;
 begin
-    l := TList<string>.Create;
-    try
-      Fields := AStructType.GetDeclaredFields;
-      for Field in Fields do
+  FieldCount := 0;
+  Fields     := AStructType.GetDeclaredFields;
+  SetLength(Fields2Serialize, Length(Fields));
+  for Field in Fields do
+  begin
+    Attrs := Field.GetAttributes;
+    for Attr in Attrs do
+    begin
+      if (Attr is SAttribute) then
       begin
-          Attrs := Field.GetAttributes;
-          for Attr in Attrs do
-          begin
-            if (Attr is SAttribute) then
-            begin
-              l.Add(Field.Name);
-              Break;
-            end;
-          end;
+        Assert(FieldCount < Length(Fields2Serialize));
+        Fields2Serialize[FieldCount] := Field.Name;
+        Inc(FieldCount);
+        Break;
       end;
-      SetLength(FFields2Serialize, l.Count);
-      for i := 0 to l.Count - 1 do
-        FFields2Serialize[i] := l[i];
-    finally
-      l.Free;
     end;
+  end;
+  SetLength(Fields2Serialize, FieldCount);
 end;
 
-procedure FindGetFields;
-type
+procedure FindGetFields(const AStructType: TRttiType);
+  type
     TFields2SerializeStaticProc = procedure(var AFieldList: TArray<string>);
     TFields2SerializeClassProc = procedure(aClass: TClass; var AFieldList: TArray<string>);
     TFields2SerializeProc = procedure(aClass: TObject; var AFieldList: TArray<string>);
 var
-  Method: TRttiMethod;
-  procStatic:   TFields2SerializeStaticProc;
-  procClass:   TFields2SerializeClassProc;
-  proc:   TFields2SerializeProc;
+  Method    : TRttiMethod;
+  procStatic: TFields2SerializeStaticProc;
+  procClass : TFields2SerializeClassProc;
+  proc      : TFields2SerializeProc;
 begin
   for Method in AStructType.GetMethods do
   begin
@@ -3134,16 +3153,25 @@ begin
       else
       begin
          proc := Method.CodeAddress;
-         proc(AStructType.AsInstance, FFields2Serialize);
+         proc(AStructType.AsInstance, Fields2Serialize);
       end;
       break;
     end;
   end;
 end;
 
+var
+  StructType: TRttiType;
 begin
-  FindAttrS;
-  FindGetFields;
+  StructType := AStructType;
+  while Assigned(StructType) do
+  begin
+    SetLength(Fields2Serialize, 0);
+    FindAttrS(StructType);
+    FindGetFields(StructType);
+    FFields2Serialize := Fields2Serialize + FFields2Serialize; // Fields of base classes come first
+    StructType        := StructType.BaseType;
+  end;
 end;
 
 procedure TgoBsonSerializer.TStructSerializer.MapFields(
@@ -3228,7 +3256,7 @@ begin
     if (Typ = nil) then
       raise EgoBsonSerializerError.CreateFmt('Unable to get type information for type "%s"',
         [FTypeInfo.NameFld.ToString]);
-
+    InitializeCustomSerializer(Typ);
     FInfoByName := TObjectDictionary<string, TInfo>.Create([doOwnsValues]);
     InitializeFields(Typ);
     MapFields(Typ);
@@ -3364,6 +3392,17 @@ begin
       end
       else if (Name = TClassSerializer.NAME_DISCRIMINATOR) then
         AReader.SkipValue
+      else if (name = TClassSerializer.CUSTOM_DISCRIMINATOR) then
+      begin
+        if assigned(FCustomSerializer) then
+        begin
+          TCustomSerializer(FCustomSerializer).Deserialize(aReader, AInstance);
+        end
+        else
+        begin
+          AReader.SkipValue;
+        end;
+      end
       else if (FErrorOnExtraElements) then
         raise EgoBsonSerializerError.CreateFmt('Element "%s" does not match any field or property of class %s.',
           [Name, FTypeInfo.NameFld.ToString])
@@ -3579,6 +3618,11 @@ begin
 
     SerializeFields(Pointer(AInstance), AWriter);
     SerializeProperties(AInstance, AWriter);
+    if assigned(FCustomSerializer) and assigned(AInstance) then
+    begin
+      AWriter.WriteName(TClassSerializer.CUSTOM_DISCRIMINATOR);
+      TCustomSerializer(FCustomSerializer).Serialize(AInstance, aWriter);
+    end;
     AWriter.WriteEndDocument;
   end
   else
@@ -3722,8 +3766,9 @@ end;
 constructor TgoBsonSerializer.TArraySerializer.Create(
   const ATypeInfo: PTypeInfo);
 var
-  TypeData: PTypeData;
-  ElementTypePtr: PPTypeInfo;
+  TypeData:        PTypeData;
+  ElementTypeData: PTypeData;
+  ElementTypePtr:  PPTypeInfo;
   ElementTypeInfo: PTypeInfo;
 begin
   inherited Create(ATypeInfo);
@@ -3734,8 +3779,9 @@ begin
   ElementTypeInfo := ElementTypePtr^;
   FElementInfo := TVarInfo.Create(ElementTypeInfo);
   // Size of the array element
-  FElementSize := ElementTypeInfo.TypeData.elSize;
-  FElementCount := TypeData.elSize div FElementSize;
+  ElementTypeData := ElementTypeInfo.TypeData;
+  FElementCount   := TypeData.ArrayData.ElCount;
+  FElementSize    := TypeData.ArrayData.Size div FElementCount;
 
 end;
 
