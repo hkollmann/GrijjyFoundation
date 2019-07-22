@@ -2126,8 +2126,15 @@ begin
     TgoBsonType.Document, TgoBsonType.Array:
       begin
         Assert(Assigned(AInfo.Serializer));
-        Assert(AInfo.Serializer is TClassSerializer);
-        TClassSerializer(AInfo.Serializer).Deserialize(AValue, AReader);
+        if AInfo.Serializer is TCustomSerializer  then
+        begin
+          TCustomSerializer(AInfo.Serializer).Deserialize(AReader, AValue);
+        end
+        else
+        begin
+          Assert(AInfo.Serializer is TClassSerializer);
+          TClassSerializer(AInfo.Serializer).Deserialize(AValue, AReader);
+        end;
       end;
   else
     raise EgoBsonSerializerError.Create('Unsupported Object deserialization type');
@@ -2365,7 +2372,7 @@ begin
   end;
 
   Serializer := GetOrAddSerializer(ASubClass.ClassInfo);
-  Assert(Serializer is TClassSerializer);
+//  Assert(Serializer is TClassSerializer);
 
   FLock.Enter;
   try
@@ -2757,9 +2764,15 @@ begin
   else
   begin
     Assert(Assigned(AInfo.Serializer));
-    Assert(AInfo.Serializer is TClassSerializer);
-    ClassSerializer := TClassSerializer(AInfo.Serializer);
-    ClassSerializer.Serialize(AValue, AWriter, ClassSerializer.TypeInfo);
+    if AInfo.Serializer is TCustomSerializer then begin
+      TCustomSerializer(AInfo.Serializer).Serialize(AValue, AWriter);
+    end
+    else
+    begin
+      Assert(AInfo.Serializer is TClassSerializer);
+      ClassSerializer := TClassSerializer(AInfo.Serializer);
+      ClassSerializer.Serialize(AValue, AWriter, ClassSerializer.TypeInfo);
+    end;
   end;
 end;
 
@@ -3425,6 +3438,7 @@ var
   ActualTypeName: String;
   ActualType: PTypeInfo;
   I: Integer;
+  Name: String;
 begin
   Result := ANominalType;
   if (AReader.GetCurrentBsonType = TgoBsonType.Document) then
@@ -3440,9 +3454,10 @@ begin
         if (AReader.ReadBsonType = TgoBsonType.EndOfDocument) then
           Break;
 
-        if (AReader.ReadName = NAME_DISCRIMINATOR) then
+        Name := AReader.ReadName;
+        Value := AReader.ReadValue;
+        if (Name = NAME_DISCRIMINATOR) then
         begin
-          Value := AReader.ReadValue;
           if (Value.IsString) then
           begin
             ActualTypeName := Value;
@@ -4079,7 +4094,7 @@ var
   TypeData: PTypeData;
 begin
   case AType.Kind of
-    tkMethod, tkProcedure, tkClassRef, tkInterface: 
+    tkMethod, tkProcedure, tkClassRef, tkInterface, tkPointer:
 	  begin
         FSerializeProc   := SerializeNothing;
         FDeserializeProc := DeserializeNothing;
@@ -4199,7 +4214,7 @@ begin
           FSerializeProc := SerializeDateTime;
           FDeserializeProc := DeserializeDateTime;
           if (FRepresentation = TgoBsonRepresentation.Default) then
-            FRepresentation := TgoBsonRepresentation.DateTime
+            FRepresentation := TgoBsonRepresentation.String
           else
             CheckDateTimeRepresentation(FRepresentation);
         end
@@ -4295,7 +4310,6 @@ begin
       begin
         if FIgnoreIfDefault and FHasDefaultValue then
           raise EgoBsonSerializerError.Create('Custom default values are not supported for set types');
-
         TypeData := GetTypeData(AType);
         Assert(Assigned(TypeData));
         case TypeData.OrdType of
@@ -4315,7 +4329,14 @@ begin
                      FDeserializeProc := DeserializeSet32;
                    end;
         else
-          Assert(False);
+          // Hack: We have no type information for TShortSet
+          if AType.Name = 'TShortSet' then
+          begin
+            FSerializeProc := SerializeSet32;
+            FDeserializeProc := DeserializeSet32;
+          end
+          else
+            Assert(False);
         end;
         if (FRepresentation = TgoBsonRepresentation.Default) then
           FRepresentation := TgoBsonRepresentation.Int32
@@ -4323,7 +4344,7 @@ begin
           CheckEnumRepresentation(FRepresentation);
       end;
 
-    tkWChar:
+    tkWChar, tkChar:
       begin
         if FIgnoreIfDefault and FHasDefaultValue then
           raise EgoBsonSerializerError.Create('Custom default values are not supported for character types');
